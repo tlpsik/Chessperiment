@@ -1,5 +1,20 @@
 import { Piece } from '../piece.js';
 import { toCoords, toSquare } from '../utils.js';
+/** Inclusive whole number. Non-numeric ends fall back to 1 and 10. Swaps ends when needed. */
+export function randomIntInclusive(from, to) {
+    let a = Math.round(Number(from));
+    let b = Math.round(Number(to));
+    if (!Number.isFinite(a))
+        a = 1;
+    if (!Number.isFinite(b))
+        b = 10;
+    if (a > b) {
+        const swap = a;
+        a = b;
+        b = swap;
+    }
+    return a + Math.floor(Math.random() * (b - a + 1));
+}
 export class LogicRunner {
     static execute(piece, triggerType, context, board) {
         if (!piece.logic || !Array.isArray(piece.logic))
@@ -238,28 +253,42 @@ export class LogicRunner {
             this.runBlock(piece, block.childId, context, board);
         }
     }
-    // Resolves values from sockets, handling dynamic variables (dropped variables)
+    // Resolves values from sockets, handling variables and pick-random reporters.
     static resolveSocketValues(piece, socketValues) {
         const resolved = {};
         if (!socketValues)
             return resolved;
         for (const [key, val] of Object.entries(socketValues)) {
-            if (val && typeof val === 'object' && val.type === 'variable') {
-                const varObj = val;
-                const varName = varObj.name;
-                // If it's explicitly a variable-only field (target name) or the key is 'varName'
-                if (varObj.variableOnly || key === 'varName') {
-                    resolved[key] = varName;
-                }
-                else {
-                    resolved[key] = piece.variables[varName] !== undefined ? piece.variables[varName] : 0;
-                }
-            }
-            else {
-                resolved[key] = val;
-            }
+            resolved[key] = this.resolveValue(piece, val, key);
         }
         return resolved;
+    }
+    // `key` is only the top-level socket name. x and y are the piece's file and rank.
+    static resolveValue(piece, val, key, depth = 0) {
+        if (!val || typeof val !== 'object')
+            return val;
+        if (depth > 16)
+            return 0;
+        if (val.type === 'variable') {
+            const varName = val.name;
+            if (val.variableOnly || key === 'varName')
+                return varName;
+            if (varName === 'x') {
+                const [col] = toCoords(piece.position);
+                return col;
+            }
+            if (varName === 'y') {
+                const [, row] = toCoords(piece.position);
+                return row;
+            }
+            return piece.variables[varName] !== undefined ? piece.variables[varName] : 0;
+        }
+        if (val.type === 'random') {
+            const from = this.resolveValue(piece, val.from, undefined, depth + 1);
+            const to = this.resolveValue(piece, val.to, undefined, depth + 1);
+            return randomIntInclusive(from, to);
+        }
+        return val;
     }
 }
 // Prevent infinite recursion

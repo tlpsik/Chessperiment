@@ -6,6 +6,12 @@ import 'blockly/blocks'; // Registers core blocks: math_number, text, variables_
 // as workspace variables so FieldVariable / variables_get can reference them.
 export const PRESET_VARIABLES = ['x', 'y', 'answer'];
 
+// Reporter block. It is not a statement, so it is not part of PIECE_BLOCK_SCHEMA and is
+// not saved as its own logic entry. It plugs into any value socket (the same places a
+// variable or a number literal can go) and is stored inside that socket's value.
+export const PICK_RANDOM_BLOCK = 'pick-random';
+export const PICK_RANDOM_COLOUR = '#59C059';
+
 const PIECE_TYPE_OPTIONS = ['Any', 'Pawn', 'Knight', 'Bishop', 'Rook', 'Queen', 'King'];
 
 // Updated from PageClient whenever the project's custom piece names change, so the
@@ -179,7 +185,26 @@ function initPieceBlock(block: Blockly.Block, type: string, schema: PieceBlockSc
     block.setTooltip(type);
 }
 
+function definePickRandomBlock() {
+    Blockly.Blocks[PICK_RANDOM_BLOCK] = {
+        init() {
+            // Number fields, not value inputs. A nested reporter with its own sockets is
+            // drawn on top of the statement it plugs into. A single-row reporter sits in
+            // a number socket the same way a variable does.
+            this.appendDummyInput()
+                .appendField('pick random')
+                .appendField(new Blockly.FieldNumber(1, -1e9, 1e9, 1), 'FROM')
+                .appendField('to')
+                .appendField(new Blockly.FieldNumber(10, -1e9, 1e9, 1), 'TO');
+            this.setOutput(true, null);
+            this.setStyle('random_blocks');
+            this.setTooltip('Picks a random whole number from the first value to the second, including both ends. Plug it into any number socket, the same way you plug in a variable.');
+        }
+    };
+}
+
 export function defineCustomPieceBlocks() {
+    definePickRandomBlock();
     Object.entries(PIECE_BLOCK_SCHEMA).forEach(([type, schema]) => {
         Blockly.Blocks[type] = {
             init() {
@@ -202,15 +227,13 @@ export function ensurePresetVariables(workspace: Blockly.Workspace) {
     });
 }
 
-/** Reads a value-input socket (a connected variables_get / math_number / text block). */
-export function readValueSocket(block: Blockly.Block, inputName: string): any {
-    const input = block.getInput(inputName);
-    const target = input?.connection?.targetBlock();
+/** Reads a reporter plugged into a value socket: a variable, a literal, or pick-random. */
+function readReporterBlock(target: Blockly.Block | null): any {
     if (!target) return undefined;
 
     if (target.type === 'variables_get') {
         const varId = target.getFieldValue('VAR');
-        const variable = target.workspace.getVariableById(varId);
+        const variable = target.workspace.getVariableMap().getVariableById(varId);
         return variable ? { type: 'variable', name: variable.getName(), variableOnly: false } : undefined;
     }
     if (target.type === 'math_number') {
@@ -220,7 +243,71 @@ export function readValueSocket(block: Blockly.Block, inputName: string): any {
     if (target.type === 'text') {
         return target.getFieldValue('TEXT');
     }
+    if (target.type === PICK_RANDOM_BLOCK) {
+        const from = Number(target.getFieldValue('FROM'));
+        const to = Number(target.getFieldValue('TO'));
+        return {
+            type: 'random',
+            from: Number.isFinite(from) ? from : 1,
+            to: Number.isFinite(to) ? to : 10
+        };
+    }
     return undefined;
+}
+
+/** Reads a value-input socket (a connected variables_get / math_number / text / pick-random block). */
+export function readValueSocket(block: Blockly.Block, inputName: string): any {
+    return readReporterBlock(block.getInput(inputName)?.connection?.targetBlock() ?? null);
+}
+
+/** Connects a number, text, variable, or pick-random reporter to a value input. */
+function fillValueInput(
+    block: Blockly.BlockSvg,
+    inputName: string,
+    value: any,
+    literalKind: 'number' | 'text'
+) {
+    const connection = block.getInput(inputName)?.connection;
+    if (!connection) return;
+    const existing = connection.targetBlock();
+    if (existing) existing.dispose(true);
+
+    const ws = block.workspace as Blockly.WorkspaceSvg;
+
+    if (value && typeof value === 'object' && value.type === 'variable') {
+        const map = ws.getVariableMap();
+        let variable = map.getVariable(value.name);
+        if (!variable) variable = map.createVariable(value.name);
+        const varBlock = ws.newBlock('variables_get') as Blockly.BlockSvg;
+        varBlock.setFieldValue(variable!.getId(), 'VAR');
+        varBlock.initSvg();
+        varBlock.render();
+        connection.connect(varBlock.outputConnection!);
+        return;
+    }
+
+    if (value && typeof value === 'object' && value.type === 'random') {
+        const randomBlock = ws.newBlock(PICK_RANDOM_BLOCK) as Blockly.BlockSvg;
+        const from = Number(value.from);
+        const to = Number(value.to);
+        randomBlock.setFieldValue(String(Number.isFinite(from) ? from : 1), 'FROM');
+        randomBlock.setFieldValue(String(Number.isFinite(to) ? to : 10), 'TO');
+        randomBlock.initSvg();
+        randomBlock.render();
+        connection.connect(randomBlock.outputConnection!);
+        return;
+    }
+
+    const shadowType = literalKind === 'number' ? 'math_number' : 'text';
+    const shadow = ws.newBlock(shadowType) as Blockly.BlockSvg;
+    shadow.setShadow(true);
+    shadow.setFieldValue(
+        String(value ?? (shadowType === 'math_number' ? 0 : '')),
+        shadowType === 'math_number' ? 'NUM' : 'TEXT'
+    );
+    shadow.initSvg();
+    shadow.render();
+    connection.connect(shadow.outputConnection!);
 }
 
 /** Reads every socket defined for a block's schema into a plain socketValues object. */
@@ -276,40 +363,19 @@ export function writeBlockSocketValue(block: Blockly.BlockSvg, socketId: string,
     } else if (socket.kind === 'variable') {
         const name = value && typeof value === 'object' ? value.name : value;
         if (!name) return;
-        let variable = ws.getVariable(name);
-        if (!variable) variable = ws.createVariable(name);
+        const map = ws.getVariableMap();
+        let variable = map.getVariable(name);
+        if (!variable) variable = map.createVariable(name);
         (block.getField(socketId) as Blockly.FieldVariable).setValue(variable!.getId());
     } else if (socket.kind === 'value-number' || socket.kind === 'value-text') {
-        const input = block.getInput(socketId);
-        if (!input?.connection) return;
-        const existing = input.connection.targetBlock();
-        if (existing) existing.dispose(true);
-
-        if (value && typeof value === 'object' && value.type === 'variable') {
-            let variable = ws.getVariable(value.name);
-            if (!variable) variable = ws.createVariable(value.name);
-            const varBlock = ws.newBlock('variables_get') as Blockly.BlockSvg;
-            varBlock.setFieldValue(variable!.getId(), 'VAR');
-            varBlock.initSvg();
-            varBlock.render();
-            input.connection.connect(varBlock.outputConnection!);
-        } else {
-            const shadowType = socket.kind === 'value-number' ? 'math_number' : 'text';
-            const shadow = ws.newBlock(shadowType) as Blockly.BlockSvg;
-            shadow.setShadow(true);
-            shadow.setFieldValue(
-                String(value ?? (shadowType === 'math_number' ? 0 : '')),
-                shadowType === 'math_number' ? 'NUM' : 'TEXT'
-            );
-            shadow.initSvg();
-            shadow.render();
-            input.connection.connect(shadow.outputConnection!);
-        }
+        fillValueInput(block, socketId, value, socket.kind === 'value-number' ? 'number' : 'text');
     }
 }
 
 /** Fills in default literal shadows for a freshly created block's value-input sockets. */
 export function initializeDefaultSockets(block: Blockly.BlockSvg) {
+    if (block.type === PICK_RANDOM_BLOCK) return;
+
     const schema = PIECE_BLOCK_SCHEMA[block.type];
     if (!schema) return;
     schema.sockets.forEach(socket => {
@@ -404,6 +470,11 @@ if (typeof window !== 'undefined') {
                 'colourPrimary': '#FFD700',
                 'colourSecondary': '#FFEC8B',
                 'colourTertiary': '#CDBE70'
+            },
+            'random_blocks': {
+                'colourPrimary': '#59C059',
+                'colourSecondary': '#46A046',
+                'colourTertiary': '#388C38'
             }
         },
         'componentStyles': {

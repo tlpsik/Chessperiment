@@ -3,6 +3,23 @@ import { Piece } from '../piece';
 import { toCoords, toSquare } from '../utils';
 import { EffectFactory, EffectExecutor } from '../effects';
 
+/**
+ * Inclusive whole number. Ends that aren't numbers fall back to 1 and 10, matching the
+ * pick-random block's defaults. The ends are swapped when the first is greater.
+ */
+export function randomIntInclusive(from: unknown, to: unknown): number {
+    let a = Math.round(Number(from));
+    let b = Math.round(Number(to));
+    if (!Number.isFinite(a)) a = 1;
+    if (!Number.isFinite(b)) b = 10;
+    if (a > b) {
+        const swap = a;
+        a = b;
+        b = swap;
+    }
+    return a + Math.floor(Math.random() * (b - a + 1));
+}
+
 interface LogicPiece extends Piece {
     logic: any[];
     variables: Record<string, any>;
@@ -383,35 +400,45 @@ export class LogicRunner {
         }
     }
 
-    // Resolves values from sockets, handling dynamic variables (dropped variables)
+    // Resolves values from sockets, handling variables and pick-random reporters.
     private static resolveSocketValues(piece: LogicPiece, socketValues: any): any {
         const resolved: any = {};
         if (!socketValues) return resolved;
 
         for (const [key, val] of Object.entries(socketValues)) {
-            if (val && typeof val === 'object' && (val as any).type === 'variable') {
-                const varObj = val as any;
-                const varName = varObj.name;
-                
-                // If it's explicitly a variable-only field (target name) or the key is 'varName'
-                if (varObj.variableOnly || key === 'varName') {
-                    resolved[key] = varName;
-                } else {
-                    // Handle built-in coordinate variables
-                    if (varName === 'x') {
-                        const [col] = toCoords(piece.position);
-                        resolved[key] = col;
-                    } else if (varName === 'y') {
-                        const [, row] = toCoords(piece.position);
-                        resolved[key] = row;
-                    } else {
-                        resolved[key] = piece.variables[varName] !== undefined ? piece.variables[varName] : 0;
-                    }
-                }
-            } else {
-                resolved[key] = val;
-            }
+            resolved[key] = this.resolveValue(piece, val, key);
         }
         return resolved;
+    }
+
+    // `key` is only the top-level socket name, so a variable-only field (the variable
+    // being assigned or compared) is not evaluated, while a variable nested inside
+    // pick-random is.
+    private static resolveValue(piece: LogicPiece, val: any, key?: string, depth = 0): any {
+        if (!val || typeof val !== 'object') return val;
+        if (depth > 16) return 0;
+
+        if (val.type === 'variable') {
+            const varName = val.name;
+            if (val.variableOnly || key === 'varName') return varName;
+
+            if (varName === 'x') {
+                const [col] = toCoords(piece.position);
+                return col;
+            }
+            if (varName === 'y') {
+                const [, row] = toCoords(piece.position);
+                return row;
+            }
+            return piece.variables[varName] !== undefined ? piece.variables[varName] : 0;
+        }
+
+        if (val.type === 'random') {
+            const from = this.resolveValue(piece, val.from, undefined, depth + 1);
+            const to = this.resolveValue(piece, val.to, undefined, depth + 1);
+            return randomIntInclusive(from, to);
+        }
+
+        return val;
     }
 }

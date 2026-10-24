@@ -543,6 +543,7 @@
                     "effects": "Effects",
                     "variables": "Variables"
                 },
+                "randomHeading": "Random",
                 "blocks": {
                     "onIsCaptured": "onCaptured",
                     "onCaptured": "onCapture",
@@ -580,7 +581,8 @@
                     "win": "Ends the game immediately with a win for the owner of this piece.",
                     "explode": "Removes pieces within a radius around this piece.",
                     "tellUser": "Displays a speech bubble from the piece with a custom message.",
-                    "askUser": "Pauses and asks the player to pick one of several options, then continues with their choice stored in the 'answer' variable. Useful for choices like which way to castle."
+                    "askUser": "Pauses and asks the player to pick one of several options, then continues with their choice stored in the 'answer' variable. Useful for choices like which way to castle.",
+                    "pickRandom": "Picks a random whole number from the first value through the second, including both ends. Plug it into any number socket the same way you plug in a variable."
                 }
             }
         }
