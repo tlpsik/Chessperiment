@@ -20,7 +20,9 @@ import {
     writeBlockSocketValue,
     initializeDefaultSockets,
     ensurePresetVariables,
-    migrateLegacyLogicIntoWorkspace
+    migrateLegacyLogicIntoWorkspace,
+    PICK_RANDOM_BLOCK,
+    PICK_RANDOM_COLOUR
 } from './blocklyDefinitions';
 
 const SAVE_DEBOUNCE_MS = 2000;
@@ -59,6 +61,17 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     { id: 'ask-user', type: 'effect', label: 'askUser', category: 'effects', color: EFFECT_SWATCH, description: 'Asks the player a question and waits for an answer.', width: 320 },
     { id: 'if', type: 'effect', label: 'if', category: 'effects', color: EFFECT_SWATCH, description: 'Compares two values (literals or variables) and runs its THEN or ELSE branch before continuing.', width: 320 }
 ];
+
+// Reporter, not a statement: it lives in the variables palette and plugs into number sockets.
+const PICK_RANDOM_TEMPLATE: BlockTemplate = {
+    id: PICK_RANDOM_BLOCK,
+    type: 'effect',
+    label: 'pick random',
+    category: 'variables',
+    color: PICK_RANDOM_COLOUR,
+    description: 'Picks a random whole number.',
+    width: 240
+};
 
 export default function LogicPageClient({ id, projectId }: { id: string, projectId?: string }) {
     const t = useTranslations('Editor.Piece.Logic');
@@ -453,6 +466,29 @@ export default function LogicPageClient({ id, projectId }: { id: string, project
                     <div className="p-4 flex-1 overflow-y-auto custom-scrollbar">
                         {activeCategory === 'variables' ? (
                             <div className="space-y-6">
+                                <div>
+                                    <h3 className="text-xs font-bold text-stone-400 uppercase tracking-wider mb-3">{t('randomHeading')}</h3>
+                                    <button
+                                        draggable
+                                        onDragStart={(e) => handleDragStart(e, PICK_RANDOM_TEMPLATE)}
+                                        onClick={() => spawnBlock(PICK_RANDOM_BLOCK)}
+                                        className="w-full text-left group relative cursor-grab active:cursor-grabbing"
+                                    >
+                                        <div
+                                            className="h-12 rounded-full px-4 flex items-center gap-2 shadow-lg border-b-4 border-black/20 transition-all duration-300 group-hover:scale-[1.03] group-active:scale-95"
+                                            style={{ backgroundColor: PICK_RANDOM_COLOUR }}
+                                        >
+                                            <span className="font-black text-[12px] text-black tracking-tight">pick random</span>
+                                            <span className="bg-white text-black text-[12px] font-black rounded-md px-2 py-0.5 min-w-[1.6rem] text-center shadow-sm">1</span>
+                                            <span className="font-black text-[12px] text-black tracking-tight">to</span>
+                                            <span className="bg-white text-black text-[12px] font-black rounded-md px-2 py-0.5 min-w-[1.6rem] text-center shadow-sm">10</span>
+                                        </div>
+                                        <div className="mt-1 px-1">
+                                            <p className="text-[10px] text-stone-500 leading-tight">{t('descriptions.pickRandom')}</p>
+                                        </div>
+                                    </button>
+                                </div>
+
                                 <div>
                                     <h3 className="text-xs font-bold text-stone-400 uppercase tracking-wider mb-3">Position Presets</h3>
                                     <div className="flex flex-wrap gap-2">
