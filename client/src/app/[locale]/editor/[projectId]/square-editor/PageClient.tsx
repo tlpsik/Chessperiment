@@ -10,6 +10,15 @@ import { useProject } from '@/hooks/useProject';
 import { BlocklyWorkspace } from 'react-blockly';
 import * as Blockly from 'blockly';
 import './blocklyDefinitions'; // Registration happens here
+import {
+    PICK_RANDOM_BLOCK,
+    PICK_RANDOM_COLOUR,
+    isSquareReporter,
+    readSquareSocketValues,
+    initializeSquareValueSockets,
+    writeSquareSocketValue,
+    migrateSquareLogicXml
+} from './blocklyDefinitions';
 import { useAIToolRegistration } from '@/hooks/useAIToolRegistration';
 import SmallScreenNotice from '@/components/editor/SmallScreenNotice';
 
@@ -19,7 +28,7 @@ interface BlockTemplate {
     id: string;
     type: 'trigger' | 'effect' | 'terminal';
     label: string;
-    category: 'trigger' | 'effects';
+    category: 'trigger' | 'effects' | 'variables';
     color: string;
     description: string;
     width: number;
@@ -109,6 +118,17 @@ const BLOCK_TEMPLATES: BlockTemplate[] = [
     }
 ];
 
+// Reporter, not a statement: it lives in the variables palette and plugs into number sockets.
+const PICK_RANDOM_TEMPLATE: BlockTemplate = {
+    id: PICK_RANDOM_BLOCK,
+    type: 'effect',
+    label: 'pick random',
+    category: 'variables',
+    color: PICK_RANDOM_COLOUR,
+    description: 'Picks a random whole number. Plug it into a number socket the same way you would use a variable.',
+    width: 240
+};
+
 export default function SquareLogicPageClient({ projectId }: { projectId: string }) {
     const router = useRouter();
     const t = useTranslations('Editor.Square'); // Use translations if available
@@ -160,7 +180,9 @@ export default function SquareLogicPageClient({ projectId }: { projectId: string
         setMounted(true);
     }, []);
 
-    const currentXml = primarySquare ? ((project?.squareLogic?.[primarySquare] as any)?.blocklyXml || '') : '';
+    const currentXml = primarySquare
+        ? migrateSquareLogicXml((project?.squareLogic?.[primarySquare] as any)?.blocklyXml || '')
+        : '';
 
     useEffect(() => {
         if (!project || !primarySquare) {
@@ -245,14 +267,7 @@ export default function SquareLogicPageClient({ projectId }: { projectId: string
                 childId: null as string | null
             };
 
-            block.inputList.forEach(input => {
-                input.fieldRow.forEach(field => {
-                    const name = field.name;
-                    if (name) {
-                        blockDef.socketValues[name] = field.getValue();
-                    }
-                });
-            });
+            blockDef.socketValues = readSquareSocketValues(block);
 
             const nextBlock = block.getNextBlock();
             if (nextBlock) {
@@ -273,6 +288,9 @@ export default function SquareLogicPageClient({ projectId }: { projectId: string
 
         const allBlocks = workspace.getAllBlocks(false);
         allBlocks.forEach(block => {
+            // Reporters (pick random, number and text shadows) are stored inside the socket
+            // they plug into, not as their own logic entry.
+            if (isSquareReporter(block.type)) return;
             logic.push(processBlock(block));
         });
 
@@ -306,6 +324,25 @@ export default function SquareLogicPageClient({ projectId }: { projectId: string
         handleSave(currentXml, updated);
     };
 
+    const spawnBlock = (type: string, x?: number, y?: number) => {
+        if (!workspaceRef.current) return null;
+        const ws = workspaceRef.current as Blockly.WorkspaceSvg;
+        const block = ws.newBlock(type) as Blockly.BlockSvg;
+        block.initSvg();
+        initializeSquareValueSockets(block);
+        block.render();
+        if (x !== undefined && y !== undefined) {
+            const workspacePoint = Blockly.utils.svgMath.screenToWsCoordinates(
+                ws,
+                new Blockly.utils.Coordinate(x, y)
+            );
+            block.moveTo(workspacePoint);
+        } else {
+            block.moveBy(100, 100);
+        }
+        return block;
+    };
+
     // ─── AI Tool Registration ───
     const squareToolHandlers = useMemo(() => ({
         get_square_logic: async (args: Record<string, any>) => {
@@ -326,21 +363,14 @@ export default function SquareLogicPageClient({ projectId }: { projectId: string
                 // Wait for workspace to initialize
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
-            spawnBlock(args.blockType);
-            // Apply socket values if provided
-            if (args.socketValues && workspaceRef.current) {
-                const ws = workspaceRef.current;
-                const allBlocks = ws.getAllBlocks(false);
-                const lastBlock = allBlocks[allBlocks.length - 1];
-                if (lastBlock) {
-                    for (const [key, value] of Object.entries(args.socketValues)) {
-                        const field = lastBlock.getField(key);
-                        if (field) field.setValue(value as string);
-                    }
-                    return JSON.stringify({ success: true, blockId: lastBlock.id });
+            const block = spawnBlock(args.blockType);
+            if (args.socketValues && block) {
+                for (const [key, value] of Object.entries(args.socketValues)) {
+                    writeSquareSocketValue(block, key, value);
                 }
+                return JSON.stringify({ success: true, blockId: block.id });
             }
-            return JSON.stringify({ success: true });
+            return JSON.stringify({ success: true, blockId: block?.id });
         },
         remove_square_block: async (args: Record<string, any>) => {
             if (!workspaceRef.current) return JSON.stringify({ error: 'Workspace not ready' });
@@ -356,8 +386,7 @@ export default function SquareLogicPageClient({ projectId }: { projectId: string
             const block = workspaceRef.current.getBlockById(args.blockId);
             if (!block) return JSON.stringify({ error: 'Block not found' });
             for (const [key, value] of Object.entries(args.socketValues)) {
-                const field = block.getField(key);
-                if (field) field.setValue(value as string);
+                writeSquareSocketValue(block as Blockly.BlockSvg, key, value);
             }
             return JSON.stringify({ success: true });
         },
@@ -390,23 +419,6 @@ export default function SquareLogicPageClient({ projectId }: { projectId: string
     }), [project, selectedSquare, variables, currentXml, handleSave]);
 
     useAIToolRegistration(squareToolHandlers);
-
-    const spawnBlock = (type: string, x?: number, y?: number) => {
-        if (!workspaceRef.current) return;
-        const ws = workspaceRef.current as Blockly.WorkspaceSvg;
-        const block = ws.newBlock(type) as Blockly.BlockSvg;
-        block.initSvg();
-        block.render();
-        if (x !== undefined && y !== undefined) {
-            const workspacePoint = Blockly.utils.svgMath.screenToWsCoordinates(
-                ws,
-                new Blockly.utils.Coordinate(x, y)
-            );
-            block.moveTo(workspacePoint);
-        } else {
-            block.moveBy(100, 100);
-        }
-    };
 
     const handleDragStart = (e: React.DragEvent, template: BlockTemplate) => {
         e.dataTransfer.setData('blockType', template.id);
@@ -509,6 +521,28 @@ export default function SquareLogicPageClient({ projectId }: { projectId: string
                 <div className="p-4 flex-1 overflow-y-auto custom-scrollbar">
                     {activeCategory === 'variables' ? (
                         <div className="space-y-6">
+                            <div>
+                                <h3 className="text-xs font-bold text-stone-400 uppercase tracking-wider mb-3">Random</h3>
+                                <button
+                                    draggable
+                                    onDragStart={(e) => handleDragStart(e, PICK_RANDOM_TEMPLATE)}
+                                    onClick={() => spawnBlock(PICK_RANDOM_BLOCK)}
+                                    className="w-full text-left group relative cursor-grab active:cursor-grabbing"
+                                >
+                                    <div
+                                        className="h-12 rounded-full px-4 flex items-center gap-2 shadow-lg border-b-4 border-black/20 transition-all duration-300 group-hover:scale-[1.03] group-active:scale-95"
+                                        style={{ backgroundColor: PICK_RANDOM_COLOUR }}
+                                    >
+                                        <span className="font-black text-[12px] text-black tracking-tight">pick random</span>
+                                        <span className="bg-white text-black text-[12px] font-black rounded-md px-2 py-0.5 min-w-[1.6rem] text-center shadow-sm">1</span>
+                                        <span className="font-black text-[12px] text-black tracking-tight">to</span>
+                                        <span className="bg-white text-black text-[12px] font-black rounded-md px-2 py-0.5 min-w-[1.6rem] text-center shadow-sm">10</span>
+                                    </div>
+                                    <div className="mt-1 px-1">
+                                        <p className="text-[10px] text-stone-500 leading-tight">{PICK_RANDOM_TEMPLATE.description}</p>
+                                    </div>
+                                </button>
+                            </div>
                             {variables.map(v => (
                                 <div key={v.id} className="group relative bg-white/5 p-4 rounded-xl border border-white/10">
                                     <span className="text-orange-400 font-bold">{v.name}</span>

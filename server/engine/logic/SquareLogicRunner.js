@@ -1,4 +1,5 @@
 import { toCoords } from '../utils.js';
+import { randomIntInclusive } from './LogicRunner.js';
 export class SquareLogicRunner {
     static execute(squareId, triggerType, context, board) {
         const squareLogic = board.squareLogic?.[squareId];
@@ -137,10 +138,15 @@ export class SquareLogicRunner {
                 }
                 break;
             case 'if': {
-                // 'left'/'right' may each be a literal, or the name of an existing square variable.
-                const resolveOperand = (raw) => (squareLogic.variables && Object.prototype.hasOwnProperty.call(squareLogic.variables, raw))
-                    ? squareLogic.variables[raw]
-                    : raw;
+                // Resolve pick-random (and variable objects) first. A plain string is still a
+                // variable name when that name exists, so older saved logic keeps working.
+                const resolveOperand = (raw) => {
+                    const value = this.resolveValue(squareLogic, raw);
+                    if (typeof value === 'string' && squareLogic.variables && Object.prototype.hasOwnProperty.call(squareLogic.variables, value)) {
+                        return squareLogic.variables[value];
+                    }
+                    return value;
+                };
                 const left = resolveOperand(block.socketValues?.left);
                 const right = resolveOperand(block.socketValues?.right);
                 const result = this.evaluateComparison(left, block.socketValues?.op, right);
@@ -182,23 +188,36 @@ export class SquareLogicRunner {
             }
         }
     }
+    static resolveValue(squareLogic, val, depth = 0) {
+        if (!val || typeof val !== 'object')
+            return val;
+        if (depth > 16)
+            return 0;
+        if (val.type === 'variable') {
+            if (val.variableOnly)
+                return val.name;
+            const name = val.name;
+            return squareLogic.variables && squareLogic.variables[name] !== undefined
+                ? squareLogic.variables[name]
+                : 0;
+        }
+        if (val.type === 'random') {
+            const from = this.resolveValue(squareLogic, val.from, depth + 1);
+            const to = this.resolveValue(squareLogic, val.to, depth + 1);
+            return randomIntInclusive(from, to);
+        }
+        return val;
+    }
     static resolveSocketValues(squareLogic, socketValues) {
         const resolved = {};
         if (!socketValues)
             return resolved;
         for (const [key, val] of Object.entries(socketValues)) {
-            if (val && typeof val === 'object' && val.type === 'variable') {
-                const varObj = val;
-                const varName = varObj.name;
-                if (varObj.variableOnly || key === 'varName') {
-                    resolved[key] = varName;
-                }
-                else {
-                    resolved[key] = squareLogic.variables[varName] !== undefined ? squareLogic.variables[varName] : 0;
-                }
+            if (val && typeof val === 'object' && val.type === 'variable' && (val.variableOnly || key === 'varName')) {
+                resolved[key] = val.name;
             }
             else {
-                resolved[key] = val;
+                resolved[key] = this.resolveValue(squareLogic, val);
             }
         }
         return resolved;
